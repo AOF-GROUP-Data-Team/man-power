@@ -3,12 +3,12 @@ name: Manpower report
 on:
   workflow_dispatch:
     inputs:
-      send_email:
-        description: "Send the email (false = build the xlsx only)"
+      mode:
+        description: "auto = send only on Saturday (KSA) | force = send now | test = build xlsx, no email"
         required: false
-        default: "true"
+        default: "auto"
         type: choice
-        options: ["true", "false"]
+        options: ["auto", "force", "test"]
 
 jobs:
   manpower:
@@ -33,7 +33,7 @@ jobs:
         env:
           ZENPUT_API_TOKEN: ${{ secrets.ZENPUT_API_TOKEN }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          SEND_EMAIL: ${{ github.event.inputs.send_email || 'true' }}
+          MODE: ${{ github.event.inputs.mode || 'auto' }}
         run: python manpower_report.py
 
       - name: Upload xlsx
@@ -42,5 +42,5 @@ jobs:
         with:
           name: manpower-report
           path: manpower_report_*.xlsx
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 14
