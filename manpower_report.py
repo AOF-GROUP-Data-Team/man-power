@@ -5,7 +5,7 @@
 # Secrets: ZENPUT_API_TOKEN, GMAIL_APP_PASSWORD
 # ============================================================
 import os, sys, smtplib, requests, re, ast
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -32,6 +32,9 @@ MAX_PAGES     = 200     # safety cap: 200 x 100 = 20,000 submissions per templat
 LINK_BASE     = "https://ops-execution.crunchtime.com/reports/#form_id/"
 
 TEMPLATES = {567430: "Shawarma Classic", 671657: "Garatis"}
+
+MIN_ID_LEN          = 2    # employee IDs shorter than this (after removing leading zeros) are ignored
+HISTORY_WEEKS       = 26   # weeks of transfer history kept in the Transfers sheet
 
 # Expected branches: brand -> {code: label}
 CLASSIC = {
@@ -119,7 +122,8 @@ def fetch(template_id):
     return out
 
 # ---------------- manpower count ----------------
-def count_manpower(s):
+def parse_employees(s):
+    """-> (unique valid employees [(id_key or None, name)], cashier_extra(0/1), slots)"""
     emps, cur = [], None
     cashier_flag, cashier_name = None, ""
     for a in s.get("answers", []):
@@ -134,17 +138,31 @@ def count_manpower(s):
             cashier_flag = is_yes(v)
         elif tl == "write name of cashier":
             cashier_name = text_of(v)
-    seen_ids, seen_names, valid = set(), set(), 0
+    seen_ids, seen_names, valid = set(), set(), []
     for e in emps:
         if not is_valid_name(e["name"]): continue
         ik, nk = id_key(e["id"]), name_compact(e["name"])
+        if ik and len(ik) < MIN_ID_LEN: ik = None
         if (ik and ik in seen_ids) or (not ik and nk in seen_names): continue
-        valid += 1
+        valid.append((ik, e["name"].strip()))
         if ik: seen_ids.add(ik)
         seen_names.add(nk)
-    if cashier_flag is False and is_valid_name(cashier_name) and name_compact(cashier_name) not in seen_names:
-        valid += 1
-    return valid, len(emps)
+    extra = 1 if (cashier_flag is False and is_valid_name(cashier_name)
+                  and name_compact(cashier_name) not in seen_names) else 0
+    return valid, extra, len(emps)
+
+def count_manpower(s):
+    valid, extra, slots = parse_employees(s)
+    return len(valid) + extra, slots
+
+RUN_TIME = datetime.now(TZ)
+def week_index(dt):
+    """0 = last 7 days before the run, 1 = the 7 days before that, ..."""
+    return max(0, int((RUN_TIME - dt).total_seconds() // (7 * 86400)))
+
+def week_range(w):
+    end = RUN_TIME - timedelta(days=7 * w)
+    return (end - timedelta(days=7)).date(), (end - timedelta(days=1)).date()
 
 # ---------------- run ----------------
 _today = datetime.now(TZ)
@@ -155,6 +173,8 @@ print(f"MODE={MODE} | {_today.strftime('%A %Y-%m-%d %H:%M')} KSA")
 if not API_TOKEN:
     sys.exit("ZENPUT_API_TOKEN is not set")
 rows = []
+snap = {}      # (branch label, week index) -> (latest datetime, set of IDs)
+first_seen = {} # (employee id, branch label, week index) -> earliest datetime listed
 for tid, brand in TEMPLATES.items():
     subs = fetch(tid)
     print(f"[{tid}] {brand}: {len(subs)} submissions")
@@ -167,6 +187,15 @@ for tid, brand in TEMPLATES.items():
             continue
         if code not in latest or dt > latest[code][0]:
             latest[code] = (dt, s)
+        exp_map = CLASSIC if brand == "Shawarma Classic" else GARATIS
+        label = f"{code} {exp_map[code]}"
+        w = week_index(dt)
+        ids = {ik for ik, _ in parse_employees(s)[0] if ik}
+        if (label, w) not in snap or dt > snap[(label, w)][0]:
+            snap[(label, w)] = (dt, ids)
+        for ik in ids:
+            k = (ik, label, w)
+            if k not in first_seen or dt < first_seen[k]: first_seen[k] = dt
     expected = CLASSIC if brand == "Shawarma Classic" else GARATIS
     structure_warned = False
     for code in sorted(expected, key=lambda c: int(re.sub(r"\D", "", c))):
@@ -183,6 +212,42 @@ for tid, brand in TEMPLATES.items():
                 print(f"   {a.get('title')} / {a.get('field_type')} / {text_of(a.get('value'))[:60]}")
         rows.append([brand, label, total, dt.strftime("%Y-%m-%d %H:%M"),
                      LINK_BASE + str(s.get("legacy_submission_id") or "")])
+
+# ---------------- transfers (ID only, week vs previous week) ----------------
+# employee's branches per week = branches whose LATEST submission that week lists the ID
+emp_weeks = {}
+for (label, w), (dt, ids) in snap.items():
+    for ik in ids:
+        emp_weeks.setdefault(ik, {}).setdefault(w, set()).add(label)
+
+transfers = []
+for ik, weeks in emp_weeks.items():
+    ws_sorted = sorted(weeks, reverse=True)            # oldest week first
+    for i, (prev_w, cur_w) in enumerate(zip(ws_sorted, ws_sorted[1:])):
+        if cur_w > HISTORY_WEEKS: continue
+        before = weeks[ws_sorted[i - 1]] if i > 0 else set()   # week before prev_w
+        old = weeks[prev_w] - weeks[cur_w]               # branches that dropped the ID
+        # branches listing the ID now; a branch that already had the ID before the overlap is
+        # its long-standing branch (the dropped one was a one-off typo), so it is not a transfer
+        targets = {t for t in weeks[cur_w] - old if not (t in weeks[prev_w] and t in before)}
+        if not old or not targets: continue               # no move
+        for to in sorted(targets):
+            # transfer date = first time the ID appeared at the new branch (may be the week before,
+            # when the employee was briefly listed at both branches)
+            seen = [first_seen[(ik, to, w)] for w in (cur_w, prev_w) if (ik, to, w) in first_seen]
+            transfers.append({
+                "id": ik, "week": cur_w,
+                "from": " / ".join(sorted(old)),
+                "last_from": max(snap[(o, prev_w)][0] for o in old),
+                "to": to, "first_to": min(seen),
+            })
+transfers.sort(key=lambda t: (t["week"], t["to"], t["id"]))
+week_transfers = [t for t in transfers if t["week"] == 0]
+wk0_start, wk0_end = week_range(0)
+print(f"\nEmployee IDs tracked: {len(emp_weeks)} | transfers (last {HISTORY_WEEKS} weeks): {len(transfers)} "
+      f"| this week ({wk0_start} - {wk0_end}): {len(week_transfers)}")
+for t in week_transfers:
+    print(f"  ID {t['id']:>6}  {t['from']:<16} -> {t['to']:<16} on {t['first_to']:%Y-%m-%d}")
 
 # ---------------- xlsx ----------------
 wb = Workbook()
@@ -214,6 +279,30 @@ for col, w in zip("ABCDE", [18, 20, 15, 18, 16]):
     ws.column_dimensions[col].width = w
 ws.freeze_panes = "A2"
 
+def transfer_sheet(title, items):
+    sh = wb.create_sheet(title)
+    sh.append(["Week", "Employee ID", "From Branch", "Last Seen at Old Branch", "To Branch", "Transfer Date"])
+    last_week = None
+    for t in items:
+        a, b = week_range(t["week"])
+        sh.append([f"{a} - {b}", t["id"], t["from"], t["last_from"].strftime("%Y-%m-%d"),
+                   t["to"], t["first_to"].strftime("%Y-%m-%d")])
+        if t["week"] % 2:   # shade alternate weeks
+            for c in sh[sh.max_row]: c.fill = PatternFill("solid", fgColor="EEF2F8")
+    if not items:
+        sh.append(["No transfers"])
+    for c in sh[1]:
+        c.fill, c.font = PatternFill("solid", fgColor="1F3864"), Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in sh.iter_rows(min_row=2):
+        for c in row: c.border, c.alignment = thin, Alignment(horizontal="center", vertical="center")
+    for col, w in zip("ABCDEF", [24, 12, 22, 18, 22, 14]):
+        sh.column_dimensions[col].width = w
+    sh.freeze_panes = "A2"
+
+transfer_sheet("Transfers This Week", week_transfers)
+transfer_sheet("Transfers History", transfers)
+
 now = datetime.now(TZ)
 fname = f"manpower_report_{now.strftime('%Y-%m-%d')}.xlsx"
 wb.save(fname)
@@ -243,6 +332,19 @@ def lowest_table(brand):
             f"<tr><th style='{TH}'>#</th><th style='{TH}'>الفرع</th><th style='{TH}'>عدد الموظفين</th>"
             f"<th style='{TH}'>آخر تسليم</th></tr>{body}</table>")
 
+def transfers_html():
+    title = f"الموظفون المنقولون هذا الأسبوع (<span dir='ltr'>{wk0_start} - {wk0_end}</span>)"
+    if not week_transfers:
+        return f"<h3 style='color:#1F3864;margin:18px 0 8px'>{title}</h3><p>لا توجد تنقلات هذا الأسبوع.</p>"
+    body = "".join(
+        f"<tr><td style='{TD}'>{i}</td><td style='{TD}'>{t['id']}</td>"
+        f"<td style='{TD}' dir='auto'>{t['from']}</td><td style='{TD}' dir='auto'>{t['to']}</td>"
+        f"<td style='{TD}' dir='ltr'>{t['first_to']:%Y-%m-%d}</td></tr>"
+        for i, t in enumerate(week_transfers, 1))
+    return (f"<h3 style='color:#1F3864;margin:18px 0 8px'>{title} - {len(week_transfers)} موظف</h3>"
+            f"<table style='border-collapse:collapse'><tr><th style='{TH}'>#</th><th style='{TH}'>الرقم الوظيفي</th>"
+            f"<th style='{TH}'>من فرع</th><th style='{TH}'>إلى فرع</th><th style='{TH}'>تاريخ النقل</th></tr>{body}</table>")
+
 def build_html():
     summary = ""
     for brand in TEMPLATES.values():
@@ -268,7 +370,8 @@ def build_html():
 {summary}
 </table>
 {lowest}
-<p>تفاصيل جميع الفروع وروابط التسليم في الملف المرفق.</p>
+{transfers_html()}
+<p>تفاصيل جميع الفروع وروابط التسليم وسجل التنقلات في الملف المرفق.</p>
 <p>مع خالص التحية،<br>إدارة ذكاء الأعمال</p>
 </body></html>"""
 
