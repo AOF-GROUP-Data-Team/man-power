@@ -21,7 +21,9 @@ GMAIL_PASS    = os.environ.get("GMAIL_APP_PASSWORD", "")
 SENDER_NAME   = "Business Intelligence"
 TO_EMAILS     = ["o.salahaddin@aofgroup.com"]
 CC_EMAILS     = ["a.alsalem@aofgroup.com"]
-SEND_EMAIL    = os.environ.get("SEND_EMAIL", "true").lower() == "true"
+MODE          = os.environ.get("MODE", "auto").strip().lower()   # auto | force | test
+RUN_WEEKDAY   = 5      # Saturday (Mon=0 ... Sun=6), KSA time
+SEND_EMAIL    = MODE != "test"
 BASE          = "https://www.zenput.com/api/v3/submissions/"
 HEADERS       = {"X-API-TOKEN": API_TOKEN}
 TZ            = pytz.timezone("Asia/Riyadh")
@@ -145,6 +147,11 @@ def count_manpower(s):
     return valid, len(emps)
 
 # ---------------- run ----------------
+_today = datetime.now(TZ)
+if MODE == "auto" and _today.weekday() != RUN_WEEKDAY:
+    print(f"Not Saturday in KSA ({_today.strftime('%A %Y-%m-%d')}) - nothing to do")
+    sys.exit(0)
+print(f"MODE={MODE} | {_today.strftime('%A %Y-%m-%d %H:%M')} KSA")
 if not API_TOKEN:
     sys.exit("ZENPUT_API_TOKEN is not set")
 rows = []
@@ -218,30 +225,51 @@ for brand in TEMPLATES.values():
 
 
 # ---------------- email ----------------
+LOWEST_N = 5          # branches shown in the "lowest manpower" table per brand
+BRAND_AR = {"Shawarma Classic": "شاورما كلاسيك", "Garatis": "قراطيس"}
+
+TD = "padding:6px 12px;border:1px solid #cccccc;text-align:center"
+TH = "padding:8px 12px;background:#1F3864;color:#ffffff;text-align:center"
+
+def lowest_table(brand):
+    br = sorted([r for r in rows if r[0] == brand and r[4]], key=lambda r: (r[2], r[1]))[:LOWEST_N]
+    if not br:
+        return "<p>لا توجد بيانات.</p>"
+    body = "".join(
+        f"<tr><td style='{TD}'>{i}</td><td style='{TD}' dir='auto'>{r[1]}</td>"
+        f"<td style='{TD};color:#C00000'><b>{r[2]}</b></td><td style='{TD}' dir='ltr'>{r[3]}</td></tr>"
+        for i, r in enumerate(br, 1))
+    return (f"<table style='border-collapse:collapse;margin-bottom:18px'>"
+            f"<tr><th style='{TH}'>#</th><th style='{TH}'>الفرع</th><th style='{TH}'>عدد الموظفين</th>"
+            f"<th style='{TH}'>آخر تسليم</th></tr>{body}</table>")
+
 def build_html():
-    lines = []
+    summary = ""
     for brand in TEMPLATES.values():
         br = [r for r in rows if r[0] == brand]
         missing = [r[1] for r in br if not r[4]]
-        lines.append(
-            f"<tr><td style='padding:6px 12px;border:1px solid #ccc'>{brand}</td>"
-            f"<td style='padding:6px 12px;border:1px solid #ccc;text-align:center'>{sum(1 for r in br if r[4])} / {len(br)}</td>"
-            f"<td style='padding:6px 12px;border:1px solid #ccc;text-align:center'><b>{sum(r[2] or 0 for r in br)}</b></td>"
-            f"<td style='padding:6px 12px;border:1px solid #ccc'>{', '.join(missing) if missing else '-'}</td></tr>")
-    return f"""<html><body style="font-family:Arial,sans-serif;font-size:14px;color:#222">
-<p>Dear Team,</p>
-<p>Please find attached the branch manpower report generated on {now.strftime('%Y-%m-%d %H:%M')} (KSA),
-based on the latest submission of each branch.</p>
+        summary += (f"<tr><td style='{TD}'>{BRAND_AR.get(brand, brand)}</td>"
+                    f"<td style='{TD}'>{sum(1 for r in br if r[4])} / {len(br)}</td>"
+                    f"<td style='{TD}'><b>{sum(r[2] or 0 for r in br)}</b></td>"
+                    f"<td style='{TD}' dir='auto'>{'، '.join(missing) if missing else '-'}</td></tr>")
+    summary += (f"<tr><td style='{TD}'><b>الإجمالي</b></td><td style='{TD}'></td>"
+                f"<td style='{TD}'><b>{sum(r[2] or 0 for r in rows)}</b></td><td style='{TD}'></td></tr>")
+    lowest = "".join(
+        f"<h3 style='color:#1F3864;margin:18px 0 8px'>أقل {LOWEST_N} فروع في عدد الموظفين - {BRAND_AR.get(b, b)}</h3>{lowest_table(b)}"
+        for b in TEMPLATES.values())
+    return f"""<html><body dir="rtl" style="font-family:Tahoma,Arial,sans-serif;font-size:14px;color:#222;text-align:right">
+<p>السلام عليكم ورحمة الله وبركاته،</p>
+<p>مرفق لكم تقرير القوى العاملة في الفروع بتاريخ <span dir="ltr">{now.strftime('%Y-%m-%d')}</span>،
+بناءً على آخر تسليم لكل فرع.</p>
+<h3 style="color:#1F3864;margin:18px 0 8px">ملخص العلامات التجارية</h3>
 <table style="border-collapse:collapse">
-<tr style="background:#1F3864;color:#fff">
-<th style="padding:6px 12px">Brand</th><th style="padding:6px 12px">Branches Submitted</th>
-<th style="padding:6px 12px">Total Manpower</th><th style="padding:6px 12px">No Submission</th></tr>
-{''.join(lines)}
-<tr><td style='padding:6px 12px;border:1px solid #ccc'><b>All</b></td><td style='border:1px solid #ccc'></td>
-<td style='padding:6px 12px;border:1px solid #ccc;text-align:center'><b>{sum(r[2] or 0 for r in rows)}</b></td>
-<td style='border:1px solid #ccc'></td></tr>
+<tr><th style="{TH}">العلامة التجارية</th><th style="{TH}">الفروع المسلّمة</th>
+<th style="{TH}">إجمالي الموظفين</th><th style="{TH}">فروع لم تسلّم</th></tr>
+{summary}
 </table>
-<p>Best regards,<br>Business Intelligence</p>
+{lowest}
+<p>تفاصيل جميع الفروع وروابط التسليم في الملف المرفق.</p>
+<p>مع خالص التحية،<br>إدارة ذكاء الأعمال</p>
 </body></html>"""
 
 def send_email(path):
@@ -251,7 +279,7 @@ def send_email(path):
     msg["From"] = formataddr((SENDER_NAME, GMAIL_USER))
     msg["To"] = ", ".join(TO_EMAILS)
     msg["Cc"] = ", ".join(CC_EMAILS)
-    msg["Subject"] = f"Branch Manpower Report - {now.strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"تقرير القوى العاملة في الفروع - {now.strftime('%Y-%m-%d')}"
     msg.attach(MIMEText(build_html(), "html", "utf-8"))
     with open(path, "rb") as f:
         part = MIMEBase("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -267,4 +295,4 @@ def send_email(path):
 if SEND_EMAIL:
     send_email(fname)
 else:
-    print("SEND_EMAIL=false -> email skipped")
+    print("MODE=test -> email skipped")
