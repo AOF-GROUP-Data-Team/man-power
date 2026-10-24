@@ -2,6 +2,8 @@
 # Branch Manpower Report — Shawarma Classic (567430) + Garatis (671657)
 # GitHub Actions version. Latest submission per branch -> cleaned manpower
 # -> xlsx -> emailed as attachment.
+# Runs on SUNDAY (KSA) so the week covered is the full Sunday -> Saturday week
+# that just ended, including Saturday's submissions.
 # Secrets: ZENPUT_API_TOKEN, GMAIL_APP_PASSWORD
 # ============================================================
 import os, sys, smtplib, requests, re, ast
@@ -22,7 +24,7 @@ SENDER_NAME   = "Business Intelligence"
 TO_EMAILS     = ["m.alhuaydar@aofgroup.com","a.omara@aofgroup.com","s.alharbi@aofgroup.com"]
 CC_EMAILS     = ["a.alsalem@aofgroup.com","o.salahaddin@aofgroup.com"]
 MODE          = os.environ.get("MODE", "auto").strip().lower()   # auto | force | test
-RUN_WEEKDAY   = 5      # Saturday (Mon=0 ... Sun=6), KSA time
+RUN_WEEKDAY   = 6      # Sunday (Mon=0 ... Sun=6), KSA time
 SEND_EMAIL    = MODE != "test"
 BASE          = "https://www.zenput.com/api/v3/submissions/"
 HEADERS       = {"X-API-TOKEN": API_TOKEN}
@@ -155,9 +157,11 @@ def count_manpower(s):
     valid, extra, slots = parse_employees(s)
     return len(valid) + extra, slots
 
-RUN_TIME = datetime.now(TZ)
+# Weeks are anchored to midnight of the run day (KSA), so on a Sunday run
+# week 0 = previous Sunday 00:00 -> Saturday 23:59, regardless of the run hour.
+RUN_TIME = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
 def week_index(dt):
-    """0 = last 7 days before the run, 1 = the 7 days before that, ..."""
+    """0 = the 7 days before the run day, 1 = the 7 days before that, ..."""
     return max(0, int((RUN_TIME - dt).total_seconds() // (7 * 86400)))
 
 def week_range(w):
@@ -167,7 +171,7 @@ def week_range(w):
 # ---------------- run ----------------
 _today = datetime.now(TZ)
 if MODE == "auto" and _today.weekday() != RUN_WEEKDAY:
-    print(f"Not Saturday in KSA ({_today.strftime('%A %Y-%m-%d')}) - nothing to do")
+    print(f"Not Sunday in KSA ({_today.strftime('%A %Y-%m-%d')}) - nothing to do")
     sys.exit(0)
 print(f"MODE={MODE} | {_today.strftime('%A %Y-%m-%d %H:%M')} KSA")
 if not API_TOKEN:
