@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "auto = send only on Saturday (KSA) | force = send now | test = build xlsx, no email"
+        description: "auto = send only on Sunday (KSA) | force = send now | test = build xlsx, no email"
         required: false
         default: "auto"
         type: choice
