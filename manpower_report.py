@@ -19,8 +19,8 @@ API_TOKEN     = os.environ.get("ZENPUT_API_TOKEN", "")
 GMAIL_USER    = "aof.group.auto@gmail.com"
 GMAIL_PASS    = os.environ.get("GMAIL_APP_PASSWORD", "")
 SENDER_NAME   = "Business Intelligence"
-TO_EMAILS     = ["o.salahaddin@aofgroup.com"]
-CC_EMAILS     = ["a.alsalem@aofgroup.com"]
+TO_EMAILS     = ["m.alhuaydar@aofgroup.com","a.omara@aofgroup.com","s.alharbi@aofgroup.com"]
+CC_EMAILS     = ["a.alsalem@aofgroup.com","o.salahaddin@aofgroup.com"]
 MODE          = os.environ.get("MODE", "auto").strip().lower()   # auto | force | test
 RUN_WEEKDAY   = 5      # Saturday (Mon=0 ... Sun=6), KSA time
 SEND_EMAIL    = MODE != "test"
