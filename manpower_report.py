@@ -47,7 +47,7 @@ CLASSIC = {
     "B22": "OBJED", "B23": "SLAHS", "B24": "SFJED", "B25": "RWAHS", "B26": "HAJED",
     "B27": "SARUH", "B28": "MAJED", "B30": "QARUH", "B31": "ANRUH", "B32": "FYJED",
     "B33": "HIRJED", "B34": "URRUH", "B35": "IRRUH", "B36": "PSJED", "B37": "SHWMAK",
-    "B38": "UHDMM", "B39": "HSRUH", "B40": "MZDMM",
+    "B38": "UHDMM", "B39": "HSRUH", "B40": "MZDMM",  "B41": "AQKBR",
 }
 GARATIS = {
     "QB01": "السويدي", "QB02": "النرجس", "QB03": "اليرموك", "QB04": "العقيق",
